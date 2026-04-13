@@ -1,0 +1,160 @@
+!pip install scikit-fuzzy
+
+# flc_traffic.py
+# Fuzzy Logic Controller (Mamdani) untuk durasi lampu hijau
+# 3 inputs: numbercars, queuelength, vehiclesize
+# 1 output: greentime
+# Program membuat 27 rules secara otomatis berdasarkan mapping S -> output
+
+import numpy as np
+import skfuzzy as fuzz
+from skfuzzy import control as ctrl
+import matplotlib.pyplot as plt
+
+# 1) Definisi universe
+numbercars = ctrl.Antecedent(np.arange(0, 31, 1), 'numbercars')       # kendaraan per lajur [0..30]
+queuelength = ctrl.Antecedent(np.arange(0, 151, 1), 'queuelength')    # antrian (m) [0..150]
+vehiclesize = ctrl.Antecedent(np.arange(0, 11, 0.1), 'vehiclesize')  # panjang kendaraan (m) [0..10]
+greentime = ctrl.Consequent(np.arange(0, 121, 1), 'greentime')       # durasi green (s) [0..120]
+
+# 2) Membership functions (triangular) — parameter sesuai saran
+# NumberCars: low, medium, high
+numbercars['low'] = fuzz.trimf(numbercars.universe, [0, 0, 15])
+numbercars['medium'] = fuzz.trimf(numbercars.universe, [4, 15, 30])
+numbercars['high'] = fuzz.trimf(numbercars.universe, [15, 30, 30])
+
+# QueueLength: short, medium, long
+queuelength['short'] = fuzz.trimf(queuelength.universe, [0, 0, 75])
+queuelength['medium'] = fuzz.trimf(queuelength.universe, [10, 75, 150])
+queuelength['long'] = fuzz.trimf(queuelength.universe, [75, 150, 150])
+
+# VehicleSize: light, medium, heavy (panjang kendaraan)
+vehiclesize['light'] = fuzz.trimf(vehiclesize.universe, [0, 0, 4.5])
+vehiclesize['medium'] = fuzz.trimf(vehiclesize.universe, [4.0, 5.25, 7.0])
+vehiclesize['heavy'] = fuzz.trimf(vehiclesize.universe, [6.5, 10, 10])
+
+# GreenTime output: very_short, short, medium, long, very_long
+greentime['very_short'] = fuzz.trimf(greentime.universe, [0, 0, 15])
+greentime['short'] = fuzz.trimf(greentime.universe, [10, 25, 40])
+greentime['medium'] = fuzz.trimf(greentime.universe, [30, 45, 60])
+greentime['long'] = fuzz.trimf(greentime.universe, [50, 75, 100])
+greentime['very_long'] = fuzz.trimf(greentime.universe, [90, 120, 120])
+
+# 3) Mapping level -> integer dan mapping S -> output_label
+level_map = {'low': 0, 'medium': 1, 'high': 2}
+
+def map_S_to_output_label(S):
+    # S in [0..6]
+    if S <= 1:
+        return 'very_short'
+    elif S == 2:
+        return 'short'
+    elif S == 3 or S == 4:
+        return 'medium'
+    elif S == 5:
+        return 'long'
+    else:  # S == 6
+        return 'very_long'
+
+# 4) Buat 27 rules secara programatik
+num_labels = ['low', 'medium', 'high']
+queue_labels = ['short', 'medium', 'long']
+size_labels = ['light', 'medium', 'heavy']
+
+rules = []
+for n_label in num_labels:
+    for q_label in queue_labels:
+        for s_label in size_labels:
+            # convert queue and size labels to low/medium/high mapping for S computation:
+            q_level_name = 'low' if q_label == 'short' else ('medium' if q_label == 'medium' else 'high')
+            s_level_name = 'low' if s_label == 'light' else ('medium' if s_label == 'medium' else 'high')
+            S = level_map[n_label] + level_map[q_level_name] + level_map[s_level_name]
+            out_label = map_S_to_output_label(S)
+            rule = ctrl.Rule(numbercars[n_label] & queuelength[q_label] & vehiclesize[s_label], greentime[out_label])
+            rules.append(rule)
+
+# 5) Buat system & simulator
+traffic_ctrl = ctrl.ControlSystem(rules)
+traffic_sim = ctrl.ControlSystemSimulation(traffic_ctrl)
+
+# 6) Contoh kasus untuk diuji
+example_cases = [
+    {'numbercars': 2, 'queuelength': 10, 'vehiclesize': 3.5},   # sangat ringan
+    {'numbercars': 8, 'queuelength': 25, 'vehiclesize': 4.8},   # campuran/menengah
+    {'numbercars': 15, 'queuelength': 70, 'vehiclesize': 6.0},  # antrian panjang / heavier
+    {'numbercars': 22, 'queuelength': 130, 'vehiclesize': 8.0},  # extreme / blocking
+    {'numbercars': 8, 'queuelength': 130, 'vehiclesize': 10.0}
+]
+
+print("Hasil simulasi contoh:")
+for case in example_cases:
+    traffic_sim.input['numbercars'] = case['numbercars']
+    traffic_sim.input['queuelength'] = case['queuelength']
+    traffic_sim.input['vehiclesize'] = case['vehiclesize']
+    traffic_sim.compute()
+    print(f"Input: numbercars={case['numbercars']}, queuelength={case['queuelength']} m, vehiclesize={case['vehiclesize']} m -> greentime = {traffic_sim.output['greentime']:.2f} s")
+
+# --- Configuration for output images ---
+output_width_inches = 3.26
+output_height_inches = output_width_inches * 0.5 # Set height to be half of width
+output_dpi = 600
+output_format = 'pdf'
+
+# Helper function to adjust line width after plotting
+def adjust_line_width(ax, width=1.5):
+    for line in ax.lines:
+        line.set_linewidth(width)
+
+# 7) Visualisasi membership functions (setiap plot terpisah)
+# numbercars
+fig1, ax1 = plt.subplots(figsize=(output_width_inches, output_height_inches))
+numbercars.view(ax=ax1)
+ax1.set_title('MF - Number of Vehicles per Lane')
+adjust_line_width(ax1) # Apply line width adjustment
+fig1.tight_layout()
+fig1.savefig(f'/tmp/numbercars_mf.{output_format}', format=output_format, dpi=output_dpi)
+plt.close(fig1)
+
+# queuelength
+fig2, ax2 = plt.subplots(figsize=(output_width_inches, output_height_inches))
+queuelength.view(ax=ax2)
+ax2.set_title('MF - Queue Length (m)')
+adjust_line_width(ax2) # Apply line width adjustment
+fig2.tight_layout()
+fig2.savefig(f'/tmp/queuelength_mf.{output_format}', format=output_format, dpi=output_dpi)
+plt.close(fig2)
+
+# vehiclesize
+fig3, ax3 = plt.subplots(figsize=(output_width_inches, output_height_inches))
+vehiclesize.view(ax=ax3)
+ax3.set_title('MF - Vehicle Size (m)')
+adjust_line_width(ax3) # Apply line width adjustment
+fig3.tight_layout()
+fig3.savefig(f'/tmp/vehiclesize_mf.{output_format}', format=output_format, dpi=output_dpi)
+plt.close(fig3)
+
+# greentime
+fig4, ax4 = plt.subplots(figsize=(output_width_inches, output_height_inches))
+greentime.view(ax=ax4)
+ax4.set_title('MF - Green Time (s)')
+adjust_line_width(ax4) # Apply line width adjustment
+fig4.tight_layout()
+fig4.savefig(f'/tmp/greentime_mf.{output_format}', format=output_format, dpi=output_dpi)
+plt.close(fig4)
+
+# 8) Visualisasi aggregated output untuk salah satu kasus (contoh index 2)
+case = example_cases[2]
+traffic_sim.input['numbercars'] = case['numbercars']
+traffic_sim.input['queuelength'] = case['queuelength']
+traffic_sim.input['vehiclesize'] = case['vehiclesize']
+traffic_sim.compute()
+
+fig5, ax5 = plt.subplots(figsize=(output_width_inches, output_height_inches))
+greentime.view(sim=traffic_sim, ax=ax5)
+ax5.set_title(f'Aggregated output MF & defuzzified value (case: n={case["numbercars"]}, q={case["queuelength"]} m, s={case["vehiclesize"]} m)')
+adjust_line_width(ax5) # Apply line width adjustment
+fig5.tight_layout()
+fig5.savefig(f'/tmp/aggregated_output_mf.{output_format}', format=output_format, dpi=output_dpi)
+plt.close(fig5)
+
+# END
